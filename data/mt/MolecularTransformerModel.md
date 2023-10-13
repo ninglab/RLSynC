@@ -1,0 +1,2 @@
+This file was obtained from the MolecularTransformer repository pre-trained.  See the License for MolecularTransformer in submodules/MolecularTransformer/LICENSE.md file.
+Do not redistribute without the license.

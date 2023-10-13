@@ -1,0 +1,5 @@
+Top-1: 73.4% || Invalid SMILES 1.55%
+Top-2: 75.9% || Invalid SMILES 6.02%
+Top-3: 76.5% || Invalid SMILES 8.74%
+Top-4: 76.8% || Invalid SMILES 11.42%
+Top-5: 76.9% || Invalid SMILES 20.27%

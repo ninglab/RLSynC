@@ -1,0 +1,17 @@
+[build-system]
+requires = [
+    "setuptools"
+]
+[project]
+name="rlsync"
+description = "Multi Agent Reinforcement Learning for Two Synthon Completion"
+version="0.0.2"
+readme = "README.md"
+dependencies = [
+    "rdkit-pypi==2021.3.5.1",
+    "gymnasium==0.27.0",
+    "torch==1.12.1"
+]
+[tool.setuptools]
+packages = ["rlsync"]
+    
