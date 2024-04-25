@@ -6,12 +6,35 @@ import json
 import numpy as np
 import sys
 import datetime
+import re
 import itertools
+import torch
 
 import rdkit
 from rdkit import Chem, DataStructs
 from rdkit.Chem import AllChem
 from rdkit.Chem import Descriptors
+
+def similarity2(a, b, sim_type="binary"):
+    a = a.replace("\n","")
+    b = b.replace("\n","")
+    a = re.sub(r'\.$', '', a)
+    b = re.sub(r'\.$', '', b)
+    if a.count(".") == b.count(".") and a.count(".") == 1:
+        a1, a2 = a.split(".")
+        b1, b2 = b.split(".")
+        s11 = similarity(a1,b1, sim_type="binary")
+        s22 = similarity(a2,b2, sim_type="binary")
+        s12 = similarity(a1,b2, sim_type="binary")
+        s21 = similarity(a2,b1, sim_type="binary")
+        if None in [s11, s22, s12, s21]:
+            return None
+        simpairs = [
+            (s11+s22)/2,
+            (s12+s21)/2
+        ]
+        return max(simpairs)
+    return similarity(a,b, sim_type="binary")
 
 def similarity(a, b, sim_type="count"):
     if a is None or b is None: 
@@ -55,7 +78,6 @@ def openjson(x):
 ap = argparse.ArgumentParser()
 ap.add_argument("--results-csv", "-r", type=str, required=True, help="CSV containing results from RLSynC")
 ap.add_argument("--oracle", "-o", type=openjson, required=False, default=None, help="Specify an existing full metrics JSON file to avoid recomputing forward synthesis")
-ap.add_argument("--simonly", "-s", action="store_true", help="Run similarity/diversity metrics only")
 ap.add_argument("--valonly", "-v", action="store_true", help="Run validation metrics only")
 ap.add_argument("--testdata", "-t", type=str, default="data/3test.json", help="original testing dataset (RLSynC JSON format)")
 ap.add_argument("--moltransformer", "-m", type=str, default="data/mt/MIT_mixed_augm_model_average_20.pt", help="molecular transformer model file (*.pt)")
@@ -65,7 +87,7 @@ args = ap.parse_args()
 results = pd.read_csv(args.results_csv)
 
 fs = None
-if args.simonly or (args.oracle is not None):
+if args.oracle is not None:
     # Using for canonicalization, no need to use GPU
     fs = ForwardSynthesis(args.moltransformer,
         n_best=5,
@@ -89,7 +111,8 @@ maxn = 0
 
 for rowitem in rowitems:
     row = rowitem[1]
-    idx = str(row["idx"])
+    idx = str(int(row["idx"]))
+    print(row)
     if idx not in reactions:
         reactions[idx] = []
         rewards[idx] = []
@@ -129,10 +152,10 @@ for rowitem in rowitems:
             exacts[idx].append(0)
             print("Synthon valence error for index %d" % int(idx))
             continue
-        if not args.simonly:
-            product = fs.canonicalize(row["product"])
+        product = fs.canonicalize(row["product"])
+        with torch.no_grad():
             rank, _score = fs.check_in_top_n(product, s1c, s2c, *remainder)
-            rewards[idx].append(int(rank > 0))
+        rewards[idx].append(int(rank > 0))
         exacts[idx].append(0)
 
 if args.oracle is not None:
@@ -143,185 +166,55 @@ fulltest = []
 with open(args.testdata, "r") as f:
     fulltest = json.load(f)
 
-invalid = {}
-invalid_counts = {}
-for idxint in range(len(fulltest)):
-    idx = str(idxint)
-    invalid[idx] = {}
-    if idx not in reactions:
-        continue
-    for i in range(10):
-        try:
-            s1c = fs.canonicalize(synthons[0])
-            if s1c is None:
-                invalid[idx][str(i)] = invalid[idx][str(i)] + ["Error reading SMILES for synthon 1"]
-        except Exception as e:
-            invalid[idx][str(i)] = invalid[idx][str(i)] + ["Error reading SMILES for synthon 1: "+str(e)]
-        try:
-            s2c = fs.canonicalize(synthons[1])
-            if s2c is None:
-                invalid[idx][str(i)] = invalid[idx][str(i)] + ["Error reading SMILES for synthon 2"]
-        except Exception as e:
-            invalid[idx][str(i)] = invalid[idx][str(i)] + ["Error reading SMILES for synthon 2: "+str(e)]
-        if len(invalid[idx].get(str(i),[])) > 0:
-            invalid_counts[str(i)] = invalid_counts.get(str(i), 0) + 1
-
-if args.valonly:
-    with open(args.results_csv+"_valonly_metrics.json", "w") as f:
-        json.dump({
-            "invalid": invalid,
-            "invalid_counts": invalid_counts,
-        }, f)
-    exit(0)
+indexref = [str(k) for k in range(len(rewards))]
 
 maxn = max([len(results) for results in reactions.values()])
-sims = {}
 diversity = {}
+diversen2 = []
+diversen = []
+diversel = []
+dclists = []
+dclists2 = []
 for topn in range(1,11):
-    for idx in reactions:
-        if len(reactions[idx][:topn]) >= 2:
-            simouts_maxavgpair_bin = []
-            simouts_maxavgpair_count = []
-            simouts_combined_bin = []
-            simouts_combined_count = []
-            simouts_maxavgpair_bin_correct = []
-            simouts_maxavgpair_count_correct = []
-            simouts_combined_bin_correct = []
-            simouts_combined_count_correct = []
-            for idxpair in itertools.combinations(range(len(reactions[idx][:topn])), 2):
-                rxnpair = (reactions[idx][idxpair[0]], reactions[idx][idxpair[1]])
-                correctpair = (0,0)
-                if not args.simonly:
-                    correctpair = (rewards[str(idx)][idxpair[0]], rewards[str(idx)][idxpair[1]])
-                preds0 = rxnpair[0].split(".")
-                preds1 = rxnpair[1].split(".")
-                scombob = similarity(rxnpair[0], rxnpair[1], sim_type="binary")
-                scomboc = similarity(rxnpair[0], rxnpair[1], sim_type="binary")
-                simouts_combined_bin.append(scombob)
-                simouts_combined_count.append(scomboc)
-                if all(correctpair):
-                    simouts_combined_bin_correct.append(scombob)
-                    simouts_combined_count_correct.append(scomboc)
-                if len(preds0) == 2 and len(preds1) == 2:
-                    s00b = similarity(preds0[0], preds1[0], sim_type="binary")
-                    s10b = similarity(preds0[1], preds1[0], sim_type="binary")
-                    s01b = similarity(preds0[0], preds1[1], sim_type="binary")
-                    s11b = similarity(preds0[1], preds1[1], sim_type="binary")
-                    s00c = similarity(preds0[0], preds1[0])
-                    s10c = similarity(preds0[1], preds1[0])
-                    s01c = similarity(preds0[0], preds1[1])
-                    s11c = similarity(preds0[1], preds1[1])
-                    if not any(map(lambda x: x is None, [s00b, s10b, s01b, s11b, s00c, s10c, s01c, s11c])):
-                        simouts_maxavgpair_bin.append(max([(s00b+s11b)/2, (s10b+s01b)/2]))
-                        simouts_maxavgpair_count.append(max([(s00c+s11c)/2, (s10c+s01c)/2]))
-                        if all(correctpair):
-                            simouts_maxavgpair_bin_correct.append(max([(s00b+s11b)/2, (s10b+s01b)/2]))
-                            simouts_maxavgpair_count_correct.append(max([(s00c+s11c)/2, (s10c+s01c)/2]))
-                elif len(preds0) + len(preds1) != 4:
-                    simouts_maxavgpair_bin_correct.append(scombob)
-                    simouts_maxavgpair_count_correct.append(scomboc)
-            sims[topn] = sims.get(topn, {})
-            sims[topn][idx] = {
-                "all": {
-                    "binary": {
-                        "maxavgpair": simouts_maxavgpair_bin,
-                        "combined": simouts_combined_bin
-                    },
-                    "count": {
-                        "maxavgpair": simouts_maxavgpair_count,
-                        "combined": simouts_combined_count
-                    }
-                },
-                "correct": {
-                    "binary": {
-                        "maxavgpair": simouts_maxavgpair_bin_correct,
-                        "combined": simouts_combined_bin_correct
-                    },
-                    "count": {
-                        "maxavgpair": simouts_maxavgpair_count_correct,
-                        "combined": simouts_combined_count_correct
-                    }
-                }
-            }
+    diverse_counts = []
+    diverse_lcounts = []
+    diverse_counts_2 = []
+    dclists = []
+    dclists2 = []
+    for idx in indexref:
+        preds = reactions.get(idx, [])[:topn]
+        dclist = []
+        dclist2 = []
+        diverse_count = 0
+        diverse_count_2 = 0
+        dlog_count = 0
+        previous = []
+        for i in range(len(preds)):
+            if rewards[idx][i]:
+                if len(previous) == 0:
+                    dclist.append(0)
+                    dclist2.append(0)
+                else:
+                    sims2 = [similarity2(preds[i], prev, "binary") for prev in previous]
+                    sims2 = [s for s in sims2 if s is not None]
+                    if len(sims2) != 0:
+                        diverse_count_2 += (1.0 - max(sims2))
+                        dclist2.append(1.0-max(sims2))
+                previous.append(preds[i])
+        dclists2.append(dclist2)
+        diverse_counts_2.append(diverse_count_2)
+    diversen2.append(diverse_counts_2)
 
-diversity = {}
-for topn in sims:
-    diversity[topn] = {
-        "all": {
-            "binary": {
-                "maxavgpair": 1 - np.mean([
-                    np.mean([x for x in sims[topn][idx]["all"]["binary"]["maxavgpair"] if x is not None]) for idx in sims[topn]
-                    if len(sims[topn][idx]["all"]["binary"]["maxavgpair"]) > 0
-                ]),
-                "combined": 1 - np.mean([np.mean([x for x in sims[topn][idx]["all"]["binary"]["combined"] if x is not None]) for idx in sims[topn]]),
-            },
-            "count": {
-                "maxavgpair": 1 - np.mean([
-                    np.mean([x for x in sims[topn][idx]["all"]["count"]["maxavgpair"] if x is not None]) for idx in sims[topn]
-                    if len(sims[topn][idx]["all"]["binary"]["maxavgpair"]) > 0
-                ]),
-                "combined": 1 - np.mean([np.mean([x for x in sims[topn][idx]["all"]["count"]["combined"] if x is not None]) for idx in sims[topn]]),
-            }
-        }
-    }
-
-if not args.simonly:
-    for idx in range(len(fulltest)):
-        idx = str(idx)
-        if idx not in reactions:
-            reactions[idx] = [None]*maxn
-            rewards[idx] = []
-            exacts[idx] = []
-    rewards = {rxn: rewards[rxn] + [0]*(maxn-len(rewards[rxn])) for rxn in rewards}
-    exacts = {rxn: exacts[rxn] + [0]*(maxn-len(exacts[rxn])) for rxn in exacts}
-    # Diversity[Correct] = 1 - mean(average similarity of correct results)
-    # Do not include reactions with one or fewer correct results
-    for topn in diversity:
-        diversity[topn]["correct"] = {
-            "binary": {
-                "maxavgpair": 1 - np.mean([
-                    np.mean([
-                        x for x in sims[topn][idx]["correct"]["binary"]["maxavgpair"] if x is not None
-                    ]) for idx in sims[topn] if len(sims[topn][idx]["correct"]["binary"]["maxavgpair"]) > 0
-                ]),
-                "combined": 1 - np.mean([
-                    np.mean([
-                        x for x in sims[topn][idx]["correct"]["binary"]["combined"] if x is not None
-                    ]) for idx in sims[topn] if len(sims[topn][idx]["correct"]["binary"]["combined"]) > 0
-                ]),
-            },
-            "count": {
-                "maxavgpair": 1 - np.mean([
-                        np.mean([x for x in sims[topn][idx]["correct"]["count"]["maxavgpair"] if x is not None
-                    ]) for idx in sims[topn] if len(sims[topn][idx]["correct"]["count"]["maxavgpair"]) > 0
-                ]),
-                "combined": 1 - np.mean([
-                    np.mean([
-                        x for x in sims[topn][idx]["correct"]["count"]["combined"] if x is not None
-                    ]) for idx in sims[topn] if len(sims[topn][idx]["correct"]["count"]["combined"]) > 0
-                ]),
-            }
-        }
-
-if not args.simonly:
-    with open(args.results_csv+"___full_metrics.json", "w") as f:
-        json.dump({
-            "rewards": rewards,
-            "exacts": exacts,
-            "sims": sims,
-            "diversity": diversity,
-            "invalid": invalid,
-            "invalid_counts": invalid_counts,
-            "ndcg": np.mean([[np.sum([rewards[str(idx)][k]/np.log2(2+k) for k in range(n+1)]) / np.sum([1/np.log2(2+k) for k in range(n+1)]) for idx in range(len(fulltest))] for n in range(10)], axis=1).tolist(),
-            "exact_match_accuracy": np.mean([[int(any(exacts[k][:(j+1)])) for j in range(maxn)] for k in rewards], axis=0).tolist(),
-            "anyreward": np.mean([[int(any(rewards[k][:(j+1)])) for j in range(maxn)] for k in rewards], axis=0).tolist(),
-            "allreward": np.mean([[int(all(rewards[k][:(j+1)])) for j in range(maxn)] for k in rewards], axis=0).tolist(),
-            "avgreward": np.mean([[np.mean(rewards[k][:(j+1)]) for j in range(maxn)] for k in rewards], axis=0).tolist(),
-        }, f)
-else:
-    with open(args.results_csv+"_simonly_metrics.json", "w") as f:
-        json.dump({
-            "sims": sims,
-            "diversity": diversity,
-            "exact_match_accuracy": np.mean([[int(any(exacts[k][:(j+1)])) for j in range(maxn)] for k in rewards], axis=0).tolist(),
-        }, f)
+with open(args.results_csv+"___full_metrics.json", "w") as f:
+    json.dump({
+        "rewards": rewards,
+        "exacts": exacts,
+        "diverse_counts": diversen2,
+        "diversity": [float(np.mean(d)) for d in diversen2],
+        "dissim_lists": dclists2,
+        "ndcg": np.mean([[np.sum([rewards[str(idx)][k]/np.log2(2+k) for k in range(n+1)]) / np.sum([1/np.log2(2+k) for k in range(n+1)]) for idx in range(len(fulltest))] for n in range(10)], axis=1).tolist(),
+        "exact_match_accuracy": np.mean([[int(any(exacts[k][:(j+1)])) for j in range(maxn)] for k in rewards], axis=0).tolist(),
+        "anyreward": np.mean([[int(any(rewards[k][:(j+1)])) for j in range(maxn)] for k in rewards], axis=0).tolist(),
+        "allreward": np.mean([[int(all(rewards[k][:(j+1)])) for j in range(maxn)] for k in rewards], axis=0).tolist(),
+        "avgreward": np.mean([[np.mean(rewards[k][:(j+1)]) for j in range(maxn)] for k in rewards], axis=0).tolist(),
+    }, f)

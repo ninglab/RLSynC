@@ -5,9 +5,9 @@ metrics = None
 with open("data/test.csv___full_metrics.json") as f:
     metrics = json.load(f)
 
-for i in range(2, 11):
-    divn = metrics["diversity"][str(i)]["correct"]["binary"]["maxavgpair"]
-    print("Diversity@%d:\t%0.3f" % (i, divn))
+for i in range(9):
+    divn = metrics["diversity"][i+1] / (i+1)
+    print("Diversity@%d:\t%0.3f" % (i+2, divn))
 
 for i in range(10):
     print("NDCG@%d:\t%0.3f" % (i+1, metrics["ndcg"][i]))
