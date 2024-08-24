@@ -2,7 +2,8 @@
 
 This is the official repository for RLSynC, a reinforcement-learning framework for synthon completion in semi-template-based retrosynthesis.
 
-[ArXiv Preprint](https://arxiv.org/abs/2309.02671)
+[📄Paper](https://pubs.acs.org/doi/10.1021/acs.jcim.4c00554)
+[📃ArXiv Preprint](https://arxiv.org/abs/2309.02671)
 
 ## Setup
 
